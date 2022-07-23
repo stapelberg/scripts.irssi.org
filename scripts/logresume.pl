@@ -11,6 +11,7 @@
 use strict;
 use Irssi;
 use Fcntl qw( :seek O_RDONLY );
+use POSIX qw(strftime);
 
 our $VERSION = "0.6";
 our %IRSSI = (
@@ -26,7 +27,7 @@ our %IRSSI = (
                . "0.4: fixed problem with lines containing %, removed use warnings"
                . "0.3: swapped File::ReadBackwards for internal tail implementation",
   modules     => "",
-  commands    => "logtail, logview",
+  commands    => "logtail",
   settings    => "logresume_channel_lines, logresume_query_lines",
 );
 
@@ -139,25 +140,31 @@ sub print_tail {
 
   return unless $lines > 0;
 
-  my $log = get_log_filename( $winitem );
-  return unless defined $log;
+  my ($yesterday, $today) = get_log_filenames( $winitem );
+  return unless defined $today;
 
   my $winrec = $winitem->window(); # need to print to the window, not the window item
 
-  for( tail( $lines, $log ) ) { # sub tail is defined below
+  for( tail( $lines, $yesterday ) ) { # sub tail is defined below
     s/%/%%/g; # prevent irssi format notation being expanded
     $winrec->print( $_, MSGLEVEL_NEVER );
   }
 
-  $winrec->print( '%K[%Clogresume%n ' . $log . '%K]%n' );
+  $winrec->print( '%K[%Clogresume%n ' . $yesterday . '%K]%n' );
+
+  for( tail( $lines, $today ) ) { # sub tail is defined below
+    s/%/%%/g; # prevent irssi format notation being expanded
+    $winrec->print( $_, MSGLEVEL_NEVER );
+  }
+
+  $winrec->print( '%K[%Clogresume%n ' . $today . '%K]%n' );
 }
 
-
-sub get_log_filename {
+sub get_log_filenames {
   my ( $winitem ) = @_;
   my ( $tag, $name ) = ( $winitem->{server}{tag}, $winitem->{name} );
 
-  my @logs = map { $_->{real_fname} } grep {
+  my @logs = map { $_->{fname} } grep {
     grep {
       $_->{name} eq $name and $_->{servertag} eq $tag
     } @{ $_->{items} }
@@ -169,9 +176,12 @@ sub get_log_filename {
   }
 
   debug_print( "surplus logfile for $tag, $name: $_" ) for @logs[1..$#logs];
-  return $logs[0];
+  my $fname = $logs[0];
+  $fname =~ s/~/$ENV{'HOME'}/g;
+  my $today = strftime($fname, localtime());
+  my $yesterday = strftime($fname, localtime(time() - 24 * 60 * 60));
+  return ($yesterday, $today);
 }
-
 
 Irssi::command_bind 'logtail' => sub {
   my ( $lines ) = @_;
@@ -180,30 +190,6 @@ Irssi::command_bind 'logtail' => sub {
   }
 
   print_tail( Irssi::active_win()->{active}, $lines );
-};
-
-
-# irssi will NOT communicate in any way with the server while the command is running, unless the command returns immediately (e.g. running screen in screen, or backgrounded X11 text editor).  So use screen.
-# usage: /logview foo bar baz
-#  will run: foo bar baz filename.log
-Irssi::command_bind 'logview' => sub {
-  my ( $args, $server, $winitem ) = @_;
-
-  my $log = get_log_filename( $winitem );
-  return unless defined $log;
-
-  my $pager = $ENV{PAGER} || "less";
-  my $program = $_[0] || "screen $pager";
-
-  system( split( / /, $program ), $log ) == 0 or do {
-    if ( $? == -1 ) {
-      prettyprint( "logview: running command '$program $log' failed: $!" );
-    } elsif ( $? & 127 ) {
-      prettyprint( "logview: running command '$program $log' died with signal " . ( $? & 127 ) );
-    } else {
-      prettyprint( "logview: running command '$program $log' exited with status " . ( $? >> 8 ) );
-    }
-  };
 };
 
 
